@@ -21,22 +21,24 @@ def get_pr_diff(repo_full_name: str, pr_number: int) -> str:
 def post_review(repo_full_name: str, pr_number: int, findings: list[dict]) -> None:
     """Post all findings as a single GitHub PR review comment."""
     if not findings:
-        return
-
-    # Build review body from findings
-    lines = ["## CodeSentinel Review\n"]
-    for f in findings:
-        severity_emoji = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(
-            f.get("severity", "info"), "🔵"
+        body = (
+            "## CodeSentinel Review\n\n"
+            "✅ **No issues found.** This diff looks clean — no bugs, security issues, "
+            "or significant code quality problems detected."
         )
-        file_ref = f"**`{f['file']}`**" if f.get("line") is None else f"**`{f['file']}` line {f['line']}**"
-        lines.append(f"### {severity_emoji} {f['severity'].upper()} — {file_ref}")
-        lines.append(f"{f['message']}\n")
-        if f.get("suggestion"):
-            lines.append(f"**Suggestion:** {f['suggestion']}\n")
-        lines.append("---")
-
-    body = "\n".join(lines)
+    else:
+        lines = ["## CodeSentinel Review\n"]
+        for f in findings:
+            severity_emoji = {"critical": "🔴", "warning": "🟡", "info": "🔵"}.get(
+                f.get("severity", "info"), "🔵"
+            )
+            file_ref = f"**`{f['file']}`**" if f.get("line") is None else f"**`{f['file']}` line {f['line']}**"
+            lines.append(f"### {severity_emoji} {f['severity'].upper()} — {file_ref}")
+            lines.append(f"{f['message']}\n")
+            if f.get("suggestion"):
+                lines.append(f"**Suggestion:** {f['suggestion']}\n")
+            lines.append("---")
+        body = "\n".join(lines)
 
     repo = _gh.get_repo(repo_full_name)
     pr = repo.get_pull(pr_number)
