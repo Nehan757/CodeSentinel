@@ -96,7 +96,7 @@ def _log_output_items(iteration: int, output: list) -> None:
                 f"tool={getattr(item, 'name', '?')} "
                 f"input={getattr(item, 'arguments', '?')}"
             )
-            # Log full item to discover if result is embedded in any attribute
+            # Log full item to discover if Tavily result is embedded in any attribute
             logger.info(f"[iter {iteration}][mcp:call:full] {item}")
         elif item_type == "mcp_call_result":
             logger.info(
