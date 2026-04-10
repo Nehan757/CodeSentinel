@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 venv/
 indexes/*.md
+pr.md
+

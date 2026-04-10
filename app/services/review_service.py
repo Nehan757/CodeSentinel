@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 from app.config import settings
-from app.services import linter_service, docs_service
+from app.services import linter_service
 
 logger = logging.getLogger(__name__)
 _client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -15,14 +15,17 @@ _client = OpenAI(api_key=settings.OPENAI_API_KEY)
 SYSTEM_PROMPT = """\
 You are a senior software engineer performing a thorough code review.
 
-You have two tools available:
+You have the following tools available:
 - `run_linter`: runs ruff on changed Python files to catch style/error issues
-- `fetch_docs`: fetches official documentation for a package when you want to verify correct API usage
+- `tavily-search`: searches the web for documentation, CVEs, known issues, or API usage examples
+- `tavily-extract`: extracts content from a specific URL when you have a direct link to documentation
 
 Strategy:
 1. If the diff touches Python files, call `run_linter` first.
-2. If the diff introduces new imports for packages you want to verify, call `fetch_docs`.
-3. After gathering tool results, return a final JSON object — no more tool calls.
+2. If the diff introduces imports or patterns you want to verify against official documentation \
+or known vulnerabilities, use `tavily-search` with a targeted query \
+(e.g. "fastapi BackgroundTasks thread safety", "httpx AsyncClient context manager").
+3. After gathering tool results, return your final JSON — no more tool calls.
 
 Your final response MUST be a raw JSON object (no markdown fences) with a single key "findings" \
 containing a list of issues found.
@@ -40,6 +43,7 @@ they affect readability. If the diff looks good with no issues, return {"finding
 """
 
 TOOLS = [
+    # Local function tool — dispatched in our process
     {
         "type": "function",
         "function": {
@@ -61,29 +65,12 @@ TOOLS = [
             },
         },
     },
+    # MCP tool — dispatched server-side by OpenAI; we never write dispatch code for it
     {
-        "type": "function",
-        "function": {
-            "name": "fetch_docs",
-            "description": (
-                "Fetch official documentation for a Python package. "
-                "Use when the PR introduces a new import you want to verify correct usage of."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "module": {
-                        "type": "string",
-                        "description": "Top-level module name (e.g. 'fastapi', 'httpx', 'asyncio')",
-                    },
-                    "topic": {
-                        "type": "string",
-                        "description": "Optional: specific class or function to look up",
-                    },
-                },
-                "required": ["module"],
-            },
-        },
+        "type": "mcp",
+        "server_label": "tavily",
+        "server_url": f"https://mcp.tavily.com/mcp/?tavilyApiKey={settings.TAVILY_API_KEY}",
+        "require_approval": "never",
     },
 ]
 
@@ -97,6 +84,7 @@ class Finding(BaseModel):
 
 
 def _dispatch_tool(name: str, args: dict, file_contents: dict[str, str]) -> str:
+    """Dispatch local function tool calls. MCP tools are handled server-side by OpenAI."""
     if name == "run_linter":
         filenames = args.get("filenames", [])
         subset = {k: v for k, v in file_contents.items() if k in filenames}
@@ -104,25 +92,17 @@ def _dispatch_tool(name: str, args: dict, file_contents: dict[str, str]) -> str:
         logger.info(f"[linter] ruff returned {len(results)} finding(s)")
         return json.dumps(results)
 
-    if name == "fetch_docs":
-        module = args.get("module", "")
-        topic = args.get("topic", "")
-        logger.info(f"[docs] fetching docs for '{module}' topic='{topic}'")
-        return docs_service.fetch_docs(module, topic)
-
     return json.dumps({"error": f"Unknown tool: {name}"})
 
 
 def _parse_findings(content: str) -> list[Finding]:
     """Parse the model's final JSON response into a list of Finding objects."""
-    # Strip markdown code fences if the model wrapped its response
     content = re.sub(r"^```(?:json)?\s*", "", content.strip())
     content = re.sub(r"\s*```$", "", content.strip())
 
     try:
         raw = json.loads(content)
     except json.JSONDecodeError:
-        # Last resort: find the first {...} block
         m = re.search(r"\{.*\}", content, re.DOTALL)
         if not m:
             logger.warning("[review] Could not parse model response as JSON")
@@ -143,7 +123,7 @@ def _parse_findings(content: str) -> list[Finding]:
 
 
 def review_diff(diff: str) -> list[Finding]:
-    """Run the agent loop: diff → tool calls → final findings."""
+    """Run the agent loop: diff → tool calls (linter + Tavily MCP) → final findings."""
     if not diff.strip():
         return []
 
@@ -151,7 +131,6 @@ def review_diff(diff: str) -> list[Finding]:
     if len(diff) > max_diff_chars:
         diff = diff[:max_diff_chars] + "\n\n[diff truncated — too large]"
 
-    # Pre-extract Python file contents from the diff for the linter tool
     file_contents = linter_service.extract_python_files_from_diff(diff)
     py_filenames = list(file_contents.keys())
 
@@ -159,37 +138,51 @@ def review_diff(diff: str) -> list[Finding]:
     if py_filenames:
         user_content += f"\n\nPython files changed: {py_filenames}"
 
-    messages: list[dict] = [
+    # Responses API uses `input`, not `messages`
+    input_items: list = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
 
     # Agent loop — capped at 5 iterations to control cost
+    # MCP tool calls (Tavily) are resolved server-side before the response returns.
+    # Only local function_call items require local dispatch and a follow-up iteration.
     for iteration in range(5):
-        response = _client.chat.completions.create(
+        response = _client.responses.create(
             model=settings.OPENAI_MODEL,
-            messages=messages,
+            input=input_items,
             tools=TOOLS,
-            tool_choice="auto",
             temperature=0.2,
         )
 
-        msg = response.choices[0].message
-        logger.info(f"[review] iteration {iteration + 1}, tool_calls={bool(msg.tool_calls)}")
+        function_calls = [
+            item for item in response.output
+            if item.type == "function_call"
+        ]
 
-        if not msg.tool_calls:
-            # Final answer
-            return _parse_findings(msg.content or "{}")
+        logger.info(
+            f"[review] iteration {iteration + 1} — "
+            f"function_calls={len(function_calls)}, "
+            f"output_items={len(response.output)}"
+        )
 
-        # Execute tool calls and append results to the conversation
-        messages.append(msg)
-        for tool_call in msg.tool_calls:
-            args = json.loads(tool_call.function.arguments)
-            result = _dispatch_tool(tool_call.function.name, args, file_contents)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": result,
+        if not function_calls:
+            # No local tools pending — model produced its final answer
+            return _parse_findings(response.output_text or "{}")
+
+        # Extend with the full assistant turn (includes any completed MCP call items).
+        # Each item in response.output is already a first-class input item — do not wrap.
+        input_items.extend(response.output)
+
+        # Dispatch each local function call and append its result
+        for fc in function_calls:
+            args = json.loads(fc.arguments)
+            result = _dispatch_tool(fc.name, args, file_contents)
+            logger.info(f"[review] dispatched {fc.name}, result length={len(result)}")
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": fc.call_id,
+                "output": result,
             })
 
     logger.warning("[review] Agent loop hit max iterations without a final answer")
