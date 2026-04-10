@@ -101,10 +101,18 @@ def _log_output_items(iteration: int, output: list) -> None:
                 try:
                     parsed = json.loads(raw_output)
                     results = parsed.get("results", [])
-                    summary = [{"url": r.get("url"), "score": r.get("score")} for r in results]
-                    logger.info(f"[iter {iteration}][mcp:result] {len(results)} result(s): {json.dumps(summary)}")
-                except Exception:
-                    logger.info(f"[iter {iteration}][mcp:result] {raw_output[:500]}")
+                    logger.info(f"[iter {iteration}][mcp:result] {len(results)} result(s)")
+                    for i, r in enumerate(results, 1):
+                        logger.info(
+                            f"[iter {iteration}][mcp:result:{i}] "
+                            f"score={r.get('score', '?'):.3f} "
+                            f"url={r.get('url', '?')}"
+                        )
+                        content = r.get("content", "").strip()
+                        if content:
+                            logger.info(f"[iter {iteration}][mcp:result:{i}:content] {content}")
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[iter {iteration}][mcp:result] failed to parse output: {e}")
         elif item_type == "mcp_call_result":
             logger.info(
                 f"[iter {iteration}][mcp:result] "
@@ -170,6 +178,28 @@ def _strip_removed_lines(diff: str) -> str:
     return "\n".join(result)
 
 
+_TOOL_COLORS = {
+    "run_linter":     "\033[93m",   # yellow
+    "tavily_search":  "\033[96m",   # cyan
+    "tavily_extract": "\033[96m",   # cyan
+    "tavily_research":"\033[96m",   # cyan
+    "tavily_skill":   "\033[96m",   # cyan
+}
+_RESET = "\033[0m"
+_BOLD  = "\033[1m"
+
+
+def _log_tools_used(tools: list[str]) -> None:
+    if not tools:
+        logger.info(f"[review] tools used: {_BOLD}(none){_RESET}")
+        return
+    colored = []
+    for t in tools:
+        color = _TOOL_COLORS.get(t, "\033[90m")
+        colored.append(f"{color}{t}{_RESET}")
+    logger.info(f"[review] tools used: {_BOLD}" + " → ".join(colored) + _RESET)
+
+
 def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]:
     """Run the agent loop: diff → tool calls (linter + Tavily MCP) → final findings."""
     if not diff.strip():
@@ -214,6 +244,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
     # the model from calling it repeatedly when it receives an empty result.
     active_tools = list(TOOLS)
     linter_called = False
+    tools_used: list[str] = []
 
     for iteration in range(1, 6):
         response = _client.responses.create(
@@ -224,6 +255,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
         )
 
         function_calls = [item for item in response.output if item.type == "function_call"]
+        mcp_calls = [item for item in response.output if item.type == "mcp_call"]
 
         logger.info(
             f"[review] iteration {iteration} — "
@@ -232,8 +264,13 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
         )
         _log_output_items(iteration, response.output)
 
+        # Track MCP tool calls in execution order
+        for mc in mcp_calls:
+            tools_used.append(getattr(mc, "name", "mcp"))
+
         if not function_calls:
             # No local tools pending — model produced its final answer
+            _log_tools_used(tools_used)
             return _parse_findings(response.output_text or "{}")
 
         # Extend with the full assistant turn (includes any completed MCP call items).
@@ -242,6 +279,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
 
         # Dispatch each local function call and append its result
         for fc in function_calls:
+            tools_used.append(fc.name)
             args = json.loads(fc.arguments)
             result = _dispatch_tool(fc.name, args, file_contents, iteration)
             input_items.append({
@@ -255,4 +293,5 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
                 active_tools = [t for t in active_tools if t.get("name") != "run_linter"]
 
     logger.warning("[review] Agent loop hit max iterations without a final answer")
+    _log_tools_used(tools_used)
     return []
