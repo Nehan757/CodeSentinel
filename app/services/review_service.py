@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 
 from app.config import settings
-from app.services import linter_service
+from app.services import linter_service, github_service
 
 logger = logging.getLogger(__name__)
 _client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -122,7 +122,7 @@ def _parse_findings(content: str) -> list[Finding]:
     return findings
 
 
-def review_diff(diff: str) -> list[Finding]:
+def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]:
     """Run the agent loop: diff → tool calls (linter + Tavily MCP) → final findings."""
     if not diff.strip():
         return []
@@ -131,8 +131,18 @@ def review_diff(diff: str) -> list[Finding]:
     if len(diff) > max_diff_chars:
         diff = diff[:max_diff_chars] + "\n\n[diff truncated — too large]"
 
-    file_contents = linter_service.extract_python_files_from_diff(diff)
-    py_filenames = list(file_contents.keys())
+    # Get changed Python filenames from the diff, then fetch full file content
+    # from the PR head branch so ruff has complete context (no false positives).
+    pr_head_ref = f"refs/pull/{pr_number}/head"
+    py_filenames = linter_service.get_python_filenames_from_diff(diff)
+    file_contents: dict[str, str] = {}
+    for filename in py_filenames:
+        try:
+            file_contents[filename] = github_service.get_file_content(
+                repo_full_name, filename, branch=pr_head_ref
+            )
+        except Exception:
+            logger.warning(f"[review] Could not fetch {filename} from {pr_head_ref}, skipping")
 
     user_content = f"Review this PR diff:\n\n```diff\n{diff}\n```"
     if py_filenames:
