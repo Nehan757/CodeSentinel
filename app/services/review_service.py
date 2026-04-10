@@ -96,8 +96,15 @@ def _log_output_items(iteration: int, output: list) -> None:
                 f"tool={getattr(item, 'name', '?')} "
                 f"input={getattr(item, 'arguments', '?')}"
             )
-            # Log full item to discover if Tavily result is embedded in any attribute
-            logger.info(f"[iter {iteration}][mcp:call:full] {item}")
+            raw_output = getattr(item, "output", None)
+            if raw_output:
+                try:
+                    parsed = json.loads(raw_output)
+                    results = parsed.get("results", [])
+                    summary = [{"url": r.get("url"), "score": r.get("score")} for r in results]
+                    logger.info(f"[iter {iteration}][mcp:result] {len(results)} result(s): {json.dumps(summary)}")
+                except Exception:
+                    logger.info(f"[iter {iteration}][mcp:result] {raw_output[:500]}")
         elif item_type == "mcp_call_result":
             logger.info(
                 f"[iter {iteration}][mcp:result] "
