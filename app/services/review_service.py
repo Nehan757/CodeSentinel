@@ -27,6 +27,8 @@ or known vulnerabilities, use `tavily-search` with a targeted query \
 (e.g. "fastapi BackgroundTasks thread safety", "httpx AsyncClient context manager").
 3. After gathering tool results, return your final JSON — no more tool calls.
 4. Only report findings for files explicitly present in the diff. Do not invent file paths.
+5. Only flag issues in added lines (lines starting with '+' in the diff). Ignore removed lines \
+(starting with '-') — that code no longer exists in the PR.
 
 Your final response MUST be a raw JSON object (no markdown fences) with a single key "findings" \
 containing a list of issues found.
