@@ -27,8 +27,6 @@ or known vulnerabilities, use `tavily-search` with a targeted query \
 (e.g. "fastapi BackgroundTasks thread safety", "httpx AsyncClient context manager").
 3. After gathering tool results, return your final JSON — no more tool calls.
 4. Only report findings for files explicitly present in the diff. Do not invent file paths.
-5. Only flag issues in added lines (lines starting with '+' in the diff). Ignore removed lines \
-(starting with '-') — that code no longer exists in the PR.
 
 Your final response MUST be a raw JSON object (no markdown fences) with a single key "findings" \
 containing a list of issues found.
@@ -151,6 +149,18 @@ def _parse_findings(content: str) -> list[Finding]:
     return findings
 
 
+def _strip_removed_lines(diff: str) -> str:
+    """Remove '-' lines from diff hunks so the model only sees added and context code.
+    File headers (---/+++) and hunk markers (@@) are preserved for context.
+    """
+    result = []
+    for line in diff.splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            continue
+        result.append(line)
+    return "\n".join(result)
+
+
 def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]:
     """Run the agent loop: diff → tool calls (linter + Tavily MCP) → final findings."""
     if not diff.strip():
@@ -174,7 +184,11 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
         except Exception:
             logger.warning(f"[review] Could not fetch {filename} from {pr_head_ref}, skipping")
 
-    user_content = f"Review this PR diff:\n\n```diff\n{diff}\n```"
+    # Strip removed lines before sending to the model — the model should only
+    # reason about code being added, not code being deleted.
+    review_diff_text = _strip_removed_lines(diff)
+
+    user_content = f"Review this PR diff:\n\n```diff\n{review_diff_text}\n```"
     if py_filenames:
         user_content += f"\n\nPython files changed: {py_filenames}"
 
