@@ -44,25 +44,24 @@ they affect readability. If the diff looks good with no issues, return {"finding
 
 TOOLS = [
     # Local function tool — dispatched in our process
+    # Responses API uses flat schema: name/description/parameters at top level (not nested under "function")
     {
         "type": "function",
-        "function": {
-            "name": "run_linter",
-            "description": (
-                "Run ruff linter on Python files changed in this PR. "
-                "Call this for any PR that touches .py files."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filenames": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Python filenames present in the diff (e.g. ['app/main.py'])",
-                    }
-                },
-                "required": ["filenames"],
+        "name": "run_linter",
+        "description": (
+            "Run ruff linter on Python files changed in this PR. "
+            "Call this for any PR that touches .py files."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filenames": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Python filenames present in the diff (e.g. ['app/main.py'])",
+                }
             },
+            "required": ["filenames"],
         },
     },
     # MCP tool — dispatched server-side by OpenAI; we never write dispatch code for it
