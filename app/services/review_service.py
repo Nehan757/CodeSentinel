@@ -83,13 +83,40 @@ class Finding(BaseModel):
     suggestion: str
 
 
-def _dispatch_tool(name: str, args: dict, file_contents: dict[str, str]) -> str:
+def _log_output_items(iteration: int, output: list) -> None:
+    """Log every item in the model's output turn for full transparency."""
+    for item in output:
+        item_type = getattr(item, "type", "unknown")
+
+        if item_type == "function_call":
+            logger.info(f"[iter {iteration}][tool:call] {item.name} input={item.arguments}")
+        elif item_type == "mcp_call":
+            logger.info(
+                f"[iter {iteration}][mcp:call] "
+                f"tool={getattr(item, 'name', '?')} "
+                f"input={getattr(item, 'arguments', '?')}"
+            )
+        elif item_type == "mcp_call_result":
+            logger.info(
+                f"[iter {iteration}][mcp:result] "
+                f"{getattr(item, 'output', '')}"
+            )
+        elif item_type == "message":
+            content = getattr(item, "content", "")
+            text = content if isinstance(content, str) else str(content)
+            logger.info(f"[iter {iteration}][model:message] {text}")
+        else:
+            logger.info(f"[iter {iteration}][output:{item_type}] {item}")
+
+
+def _dispatch_tool(name: str, args: dict, file_contents: dict[str, str], iteration: int) -> str:
     """Dispatch local function tool calls. MCP tools are handled server-side by OpenAI."""
     if name == "run_linter":
         filenames = args.get("filenames", [])
         subset = {k: v for k, v in file_contents.items() if k in filenames}
+        logger.info(f"[iter {iteration}][tool:run_linter] linting {list(subset.keys())}")
         results = linter_service.run_ruff(subset)
-        logger.info(f"[linter] ruff returned {len(results)} finding(s)")
+        logger.info(f"[iter {iteration}][tool:run_linter] {len(results)} finding(s): {json.dumps(results)}")
         return json.dumps(results)
 
     return json.dumps({"error": f"Unknown tool: {name}"})
@@ -141,6 +168,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
             file_contents[filename] = github_service.get_file_content(
                 repo_full_name, filename, branch=pr_head_ref
             )
+            logger.info(f"[review] fetched {filename} ({len(file_contents[filename])} chars) from {pr_head_ref}")
         except Exception:
             logger.warning(f"[review] Could not fetch {filename} from {pr_head_ref}, skipping")
 
@@ -162,7 +190,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
     active_tools = list(TOOLS)
     linter_called = False
 
-    for iteration in range(5):
+    for iteration in range(1, 6):
         response = _client.responses.create(
             model=settings.OPENAI_MODEL,
             input=input_items,
@@ -170,16 +198,14 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
             temperature=0.2,
         )
 
-        function_calls = [
-            item for item in response.output
-            if item.type == "function_call"
-        ]
+        function_calls = [item for item in response.output if item.type == "function_call"]
 
         logger.info(
-            f"[review] iteration {iteration + 1} — "
-            f"function_calls={len(function_calls)}, "
-            f"output_items={len(response.output)}"
+            f"[review] iteration {iteration} — "
+            f"output_items={len(response.output)}, "
+            f"local_tool_calls={len(function_calls)}"
         )
+        _log_output_items(iteration, response.output)
 
         if not function_calls:
             # No local tools pending — model produced its final answer
@@ -192,8 +218,7 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
         # Dispatch each local function call and append its result
         for fc in function_calls:
             args = json.loads(fc.arguments)
-            result = _dispatch_tool(fc.name, args, file_contents)
-            logger.info(f"[review] dispatched {fc.name}, result length={len(result)}")
+            result = _dispatch_tool(fc.name, args, file_contents, iteration)
             input_items.append({
                 "type": "function_call_output",
                 "call_id": fc.call_id,
