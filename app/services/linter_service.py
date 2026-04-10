@@ -60,16 +60,7 @@ def run_ruff(file_contents: dict[str, str]) -> list[dict]:
 
         try:
             result = subprocess.run(
-                [
-                    "ruff", "check",
-                    "--output-format=json",
-                    "--no-cache",
-                    # Exclude rules that produce false positives on partial diff content:
-                    # E9xx = syntax errors (file is incomplete, not broken)
-                    # F821 = undefined name (imports may be outside the diffed hunk)
-                    # F401 = unused import (full file not available to verify usage)
-                    "--extend-ignore=E9,F821,F401",
-                ] + paths,
+                ["ruff", "check", "--output-format=json", "--no-cache"] + paths,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -88,15 +79,26 @@ def run_ruff(file_contents: dict[str, str]) -> list[dict]:
         except json.JSONDecodeError:
             return []
 
+        # Rules that are unreliable on partial diff content and must be filtered out:
+        # E999 — ruff pre-parse fatal: "SyntaxError" triggered by missing file context
+        #         (e.g. a class attribute hunk with no class definition above it).
+        #         Cannot be suppressed via --extend-ignore; must be filtered post-run.
+        # F821 — undefined name: imports are likely in a hunk not included in the diff
+        # F401 — unused import: rest of the file (where the import is used) is not present
+        SKIP_CODES = {"E999", "F821", "F401"}
+
         prefix = tmpdir + "/"
         for item in raw:
+            code = item.get("code", "")
+            if code in SKIP_CODES:
+                continue
             abs_path = item.get("filename", "")
             rel_path = abs_path.removeprefix(prefix)
             findings.append({
                 "file": rel_path,
                 "line": item.get("location", {}).get("row"),
                 "col": item.get("location", {}).get("column"),
-                "code": item.get("code", ""),
+                "code": code,
                 "message": item.get("message", ""),
                 "url": item.get("url", ""),
             })
