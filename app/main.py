@@ -9,8 +9,8 @@ logging.basicConfig(
 
 app = FastAPI(
     title="CodeSentinel",
-    description="AI-powered GitHub PR code review bot — Phase 1",
-    version="0.1.0",
+    description="AI-powered GitHub PR code review bot — Phase 2",
+    version="0.2.1",
 )
 
 app.include_router(health.router)
@@ -20,4 +20,4 @@ app.include_router(repos.router)
 
 @app.get("/")
 def root():
-    return {"service": "CodeSentinel", "version": "0.1.0", "phase": 1}
+    return {"service": "CodeSentinel", "version": "0.2.1", "phase": 2}

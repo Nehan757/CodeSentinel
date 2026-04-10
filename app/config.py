@@ -6,6 +6,7 @@ class Settings(BaseSettings):
     GITHUB_TOKEN: str
     GITHUB_WEBHOOK_SECRET: str
     OPENAI_MODEL: str = "gpt-4o"
+    TAVILY_API_KEY: str
 
     class Config:
         env_file = ".env"

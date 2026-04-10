@@ -27,7 +27,7 @@ def _run_review(repo_full_name: str, pr_number: int) -> None:
     try:
         logger.info(f"[review] Starting review for {repo_full_name}#{pr_number}")
         diff = github_service.get_pr_diff(repo_full_name, pr_number)
-        findings = review_service.review_diff(diff)
+        findings = review_service.review_diff(diff, repo_full_name, pr_number)
         logger.info(f"[review] Found {len(findings)} findings for {repo_full_name}#{pr_number}")
         github_service.post_review(
             repo_full_name,
