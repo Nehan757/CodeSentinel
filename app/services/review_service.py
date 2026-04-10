@@ -154,14 +154,19 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
         {"role": "user", "content": user_content},
     ]
 
-    # Agent loop — capped at 5 iterations to control cost
+    # Agent loop — capped at 5 iterations to control cost.
     # MCP tool calls (Tavily) are resolved server-side before the response returns.
     # Only local function_call items require local dispatch and a follow-up iteration.
+    # run_linter is removed from the tools list after its first dispatch to prevent
+    # the model from calling it repeatedly when it receives an empty result.
+    active_tools = list(TOOLS)
+    linter_called = False
+
     for iteration in range(5):
         response = _client.responses.create(
             model=settings.OPENAI_MODEL,
             input=input_items,
-            tools=TOOLS,
+            tools=active_tools,
             temperature=0.2,
         )
 
@@ -194,6 +199,10 @@ def review_diff(diff: str, repo_full_name: str, pr_number: int) -> list[Finding]
                 "call_id": fc.call_id,
                 "output": result,
             })
+            if fc.name == "run_linter" and not linter_called:
+                linter_called = True
+                # Drop run_linter from active tools so the model cannot call it again
+                active_tools = [t for t in active_tools if t.get("name") != "run_linter"]
 
     logger.warning("[review] Agent loop hit max iterations without a final answer")
     return []
