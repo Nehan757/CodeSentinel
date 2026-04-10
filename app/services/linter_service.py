@@ -60,7 +60,16 @@ def run_ruff(file_contents: dict[str, str]) -> list[dict]:
 
         try:
             result = subprocess.run(
-                ["ruff", "check", "--output-format=json", "--no-cache"] + paths,
+                [
+                    "ruff", "check",
+                    "--output-format=json",
+                    "--no-cache",
+                    # Exclude rules that produce false positives on partial diff content:
+                    # E9xx = syntax errors (file is incomplete, not broken)
+                    # F821 = undefined name (imports may be outside the diffed hunk)
+                    # F401 = unused import (full file not available to verify usage)
+                    "--extend-ignore=E9,F821,F401",
+                ] + paths,
                 capture_output=True,
                 text=True,
                 timeout=30,

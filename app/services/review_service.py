@@ -21,11 +21,12 @@ You have the following tools available:
 - `tavily-extract`: extracts content from a specific URL when you have a direct link to documentation
 
 Strategy:
-1. If the diff touches Python files, call `run_linter` first.
+1. If the diff touches Python files, call `run_linter` exactly once. Do not call it again.
 2. If the diff introduces imports or patterns you want to verify against official documentation \
 or known vulnerabilities, use `tavily-search` with a targeted query \
 (e.g. "fastapi BackgroundTasks thread safety", "httpx AsyncClient context manager").
 3. After gathering tool results, return your final JSON — no more tool calls.
+4. Only report findings for files explicitly present in the diff. Do not invent file paths.
 
 Your final response MUST be a raw JSON object (no markdown fences) with a single key "findings" \
 containing a list of issues found.
